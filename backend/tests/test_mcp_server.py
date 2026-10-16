@@ -133,6 +133,66 @@ def test_mcp_tools_validate_dates_and_require_exact_channel() -> None:
     with pytest.raises(ValueError, match="must not be blank"):
         mcp_server.get_reconciliation_report("2026-10-15", "  ")
 
+    with pytest.raises(ValueError, match="must not be later"):
+        mcp_server.list_reconciliation_history(
+            start_date="2026-10-16",
+            end_date="2026-10-15",
+        )
+
+
+def test_list_reconciliation_history_forwards_filters_and_pagination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"total": 1, "limit": 20, "offset": 0, "items": []}
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, payload=None):
+        calls.append((method, path))
+        return expected
+
+    monkeypatch.setattr(mcp_server, "_api_request", fake_request)
+
+    result = mcp_server.list_reconciliation_history(
+        start_date="2026-10-01",
+        end_date="2026-10-16",
+        channel=" qr ",
+        limit=20,
+        offset=0,
+    )
+
+    assert result == expected
+    assert calls == [
+        (
+            "GET",
+            "/api/v1/reconciliations/history?start_date=2026-10-01&end_date=2026-10-16&channel=qr&limit=20&offset=0",
+        )
+    ]
+
+
+def test_get_discrepancy_explanation_reads_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "assessment": "OBSERVED",
+        "facts": ["Current provider status is FAILED."],
+        "hypotheses": ["Unverified hypothesis."],
+        "recommendation": "Check provider evidence.",
+    }
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, payload=None):
+        calls.append((method, path))
+        return expected
+
+    monkeypatch.setattr(mcp_server, "_api_request", fake_request)
+
+    result = mcp_server.get_discrepancy_explanation(17)
+
+    assert result == expected
+    assert calls == [
+        ("GET", "/api/v1/discrepancies/17/explanation"),
+    ]
+
 
 @pytest.fixture
 def anyio_backend() -> str:
@@ -149,6 +209,8 @@ async def test_mcp_server_publishes_only_read_and_reconciliation_tools() -> None
         "run_reconciliation",
         "get_reconciliation_report",
         "get_daily_reconciliation_summary",
+        "list_reconciliation_history",
+        "get_discrepancy_explanation",
     }
 
 
@@ -173,3 +235,60 @@ async def test_mcp_server_dispatches_availability_tool(
 
     assert not response.isError
     assert response.structuredContent == expected
+
+
+@pytest.mark.anyio
+async def test_mcp_server_dispatches_history_tool_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"total": 0, "limit": 50, "offset": 0, "items": []}
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, payload=None):
+        calls.append((method, path))
+        return expected
+
+    monkeypatch.setattr(mcp_server, "_api_request", fake_request)
+
+    async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+        response = await client.call_tool("list_reconciliation_history", {})
+
+    assert not response.isError
+    assert response.structuredContent == expected
+    assert calls == [
+        (
+            "GET",
+            "/api/v1/reconciliations/history?limit=50&offset=0",
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_mcp_server_dispatches_explanation_tool_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "assessment": "OBSERVED",
+        "facts": ["Current provider status is FAILED."],
+        "hypotheses": [],
+        "recommendation": "Review provider evidence.",
+    }
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, payload=None):
+        calls.append((method, path))
+        return expected
+
+    monkeypatch.setattr(mcp_server, "_api_request", fake_request)
+
+    async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+        response = await client.call_tool(
+            "get_discrepancy_explanation",
+            {"discrepancy_id": 17},
+        )
+
+    assert not response.isError
+    assert response.structuredContent == expected
+    assert calls == [
+        ("GET", "/api/v1/discrepancies/17/explanation"),
+    ]

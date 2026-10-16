@@ -31,6 +31,8 @@ Este plan refleja el estado real del MVP ya implementado y el backlog sugerido.
 - [x] **API-08** OpenAPI documentado y UI de docs (`/openapi.json`, `/docs`, `/redoc`).
 - [x] **API-09** Disponibilidad por fecha/canal y conteos por fuente (`GET /api/v1/records/availability`).
 - [x] **API-10** Resumen diario con conteos independientes de transacciones e incidencias resueltas.
+- [x] **API-11** Historial paginado y filtrable de corridas sin detalle de incidencias.
+- [x] **API-12** Explicación determinista y de solo lectura con evidencia acotada para incidencias.
 
 ### Frontend
 
@@ -48,12 +50,15 @@ Este plan refleja el estado real del MVP ya implementado y el backlog sugerido.
 - [x] **MCP-02** Agente de operación manual y skill/runbook para ejecutar y reportar conciliaciones.
 - [x] **MCP-03** Seed idempotente de cinco días sintéticos en `America/Lima`, sin crear corridas.
 - [x] **MCP-04** Protección de no-data y recuperación de corrida existente; sin scheduler.
+- [x] **MCP-05** Tool de listado de historial con filtros y recorrido paginado de solo lectura.
+- [x] **MCP-06** Tool de explicación de incidencia y guía del agente para hechos, hipótesis y recomendación humana.
 
 ### Calidad
 
 - [x] **QA-01** Tests de API para conciliación, filtros, errores y OpenAPI.
 - [x] **QA-02** Tests de seed demo e idempotencia de carga inicial.
 - [x] **QA-03** Tests MCP y validación de compilación TypeScript del frontend.
+- [x] **QA-04** Tests de explicaciones para los diez tipos, evidencia incompleta, lectura sin efectos y tool MCP.
 
 ## 2) Backlog recomendado (siguiente iteración)
 

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-16
+goal: Especificar el panel de operación diaria, sus interacciones y contratos
+  visibles antes de construirlo

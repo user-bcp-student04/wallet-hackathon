@@ -96,6 +96,28 @@ existente; requiere petición explícita del usuario, no crea corridas sin datos
 y devuelve la corrida existente cuando ya existe. No carga ni modifica registros
 fuente o estados de investigación. No hay scheduler.
 
+### RF-14 Historial paginado de corridas
+
+`GET /api/v1/reconciliations/history` lista las corridas existentes ordenadas de
+la más reciente a la más antigua. Acepta filtros inclusivos opcionales
+`start_date` y `end_date`, filtro exacto opcional `channel`, y paginación por
+`limit` (1-100; predeterminado 50) y `offset` (predeterminado 0). Devuelve el
+total de resultados filtrados y elementos con ID, fecha, canal, fecha de
+creación y resumen, sin incluir detalle de incidencias. Es de solo lectura.
+
+### RF-15 Explicación determinista de una incidencia
+
+`GET /api/v1/discrepancies/{id}/explanation` devuelve, para uno de los diez tipos
+de incidencia vigentes, el estado de evaluación (`OBSERVED` o `INCONCLUSIVE`),
+hechos obtenidos de la evidencia fuente actual, hipótesis etiquetadas como no
+verificadas y una recomendación manual. Consulta como máximo 20 filas por fuente
+para la referencia y fecha de la incidencia; los conteos informan el total y si
+la muestra fue truncada. Si se trunca o no alcanza la evidencia, el resultado es
+inconcluso. Incluye el momento de consulta y advierte que no es un snapshot de la
+corrida original. La consulta no cambia fuentes, incidencias, estados, notas ni
+métricas. La persona analista verifica la evidencia y gestiona cualquier
+transición por el flujo actual.
+
 ## 3) Requisitos no funcionales implementados
 
 - **NFR-01 Trazabilidad mínima**: cada descalce conserva referencia, tipo, detalle, timestamps y nota.

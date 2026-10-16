@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import logging
 import os
 from typing import Annotated
@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import Base, SessionLocal, engine, get_session
 from app.demo_data import seed_previous_demo_days
+from app.explanations import MAX_EVIDENCE_ROWS_PER_SOURCE, analyze_current_evidence
 from app.models import (
     Discrepancy,
+    DiscrepancyType,
     InvestigationStatus,
     ReconciliationRun,
     RecordSource,
@@ -23,12 +25,18 @@ from app.models import (
 from app.reconciliation import build_reconciliation, summarize
 from app.schemas import (
     DiscrepancyResponse,
+    DiscrepancyExplanation,
     DiscrepancyStatusUpdate,
     DailyReconciliationSummary,
+    ExplanationAssessment,
     RecordAvailability,
+    ReconciliationHistoryItem,
+    ReconciliationHistoryPage,
     ReconciliationReport,
     ReconciliationRequest,
     ReconciliationRunResult,
+    SourceEvidenceGroup,
+    SourceRecordEvidence,
     SourceRecordBatch,
     SourceRecordLoadResult,
 )
@@ -409,6 +417,91 @@ def create_app() -> FastAPI:
         )
 
     @app.get(
+        "/api/v1/reconciliations/history",
+        response_model=ReconciliationHistoryPage,
+        tags=["Conciliaciones"],
+        summary="Consultar historial paginado de conciliaciones",
+        description=(
+            "Lista corridas existentes, de la más reciente a la más antigua, con su "
+            "resumen y sin detalle de incidencias. Admite filtros opcionales por rango "
+            "de fechas y canal, y paginación mediante limit y offset. Es una consulta "
+            "de solo lectura."
+        ),
+    )
+    def list_reconciliation_history(
+        session: Annotated[Session, Depends(get_session)],
+        start_date: date | None = Query(
+            default=None,
+            description="Fecha operativa inicial inclusiva, en formato AAAA-MM-DD.",
+        ),
+        end_date: date | None = Query(
+            default=None,
+            description="Fecha operativa final inclusiva, en formato AAAA-MM-DD.",
+        ),
+        channel: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=64,
+            description="Canal exacto opcional por el que se filtrarán las corridas.",
+        ),
+        limit: int = Query(
+            default=50,
+            ge=1,
+            le=100,
+            description="Cantidad máxima de elementos por página (1 a 100).",
+        ),
+        offset: int = Query(
+            default=0,
+            ge=0,
+            description="Cantidad de elementos a omitir para recorrer las páginas.",
+        ),
+    ) -> ReconciliationHistoryPage:
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise HTTPException(
+                status_code=422,
+                detail="start_date no puede ser posterior a end_date.",
+            )
+
+        filters = []
+        if start_date is not None:
+            filters.append(ReconciliationRun.reconciliation_date >= start_date)
+        if end_date is not None:
+            filters.append(ReconciliationRun.reconciliation_date <= end_date)
+        if channel is not None:
+            filters.append(ReconciliationRun.channel == channel)
+
+        total = session.scalar(
+            select(func.count()).select_from(ReconciliationRun).where(*filters)
+        )
+        runs = session.scalars(
+            select(ReconciliationRun)
+            .options(selectinload(ReconciliationRun.discrepancies))
+            .where(*filters)
+            .order_by(
+                ReconciliationRun.reconciliation_date.desc(),
+                ReconciliationRun.created_at.desc(),
+                ReconciliationRun.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return ReconciliationHistoryPage(
+            total=total or 0,
+            limit=limit,
+            offset=offset,
+            items=[
+                ReconciliationHistoryItem(
+                    run_id=run.id,
+                    reconciliation_date=run.reconciliation_date,
+                    channel=run.channel,
+                    created_at=run.created_at,
+                    summary=summarize(run),
+                )
+                for run in runs
+            ],
+        )
+
+    @app.get(
         "/api/v1/reconciliations/{run_id}",
         response_model=ReconciliationReport,
         tags=["Conciliaciones"],
@@ -439,6 +532,97 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="No se encontró la conciliación solicitada.")
         return report_from_run(run)
+
+    @app.get(
+        "/api/v1/discrepancies/{discrepancy_id}/explanation",
+        response_model=DiscrepancyExplanation,
+        tags=["Descalces"],
+        summary="Explicar un descalce usando evidencia fuente actual",
+        description=(
+            "Devuelve hechos observados, hipótesis no verificadas y una recomendación "
+            "determinista para una incidencia. La evidencia se consulta en el momento "
+            "de la solicitud, no es un snapshot de la corrida. Devuelve como máximo "
+            f"{MAX_EVIDENCE_ROWS_PER_SOURCE} filas por fuente; si se supera el límite, "
+            "la evaluación será no concluyente. Esta consulta no modifica datos ni estados."
+        ),
+        responses={404: {"description": "No existe el descalce solicitado."}},
+    )
+    def explain_discrepancy(
+        discrepancy_id: Annotated[
+            int,
+            Path(
+                description="Identificador numérico del descalce que se analizará.",
+                gt=0,
+            ),
+        ],
+        session: Annotated[Session, Depends(get_session)],
+    ) -> DiscrepancyExplanation:
+        discrepancy = session.scalar(
+            select(Discrepancy)
+            .options(selectinload(Discrepancy.run))
+            .where(Discrepancy.id == discrepancy_id)
+        )
+        if discrepancy is None:
+            raise HTTPException(status_code=404, detail="No se encontró el descalce solicitado.")
+
+        run = discrepancy.run
+        evidence_by_source: dict[RecordSource, SourceEvidenceGroup] = {}
+        for source in RecordSource:
+            filters = (
+                SourceRecord.transaction_date == run.reconciliation_date,
+                SourceRecord.transaction_reference
+                == discrepancy.transaction_reference,
+                SourceRecord.source == source.value,
+            )
+            record_count = session.scalar(
+                select(func.count()).select_from(SourceRecord).where(*filters)
+            )
+            source_records = session.scalars(
+                select(SourceRecord)
+                .where(*filters)
+                .order_by(SourceRecord.id)
+                .limit(MAX_EVIDENCE_ROWS_PER_SOURCE)
+            ).all()
+            evidence_by_source[source] = SourceEvidenceGroup(
+                source=source,
+                current_record_count=record_count or 0,
+                truncated=(record_count or 0) > MAX_EVIDENCE_ROWS_PER_SOURCE,
+                records=[
+                    SourceRecordEvidence(
+                        record_id=record.id,
+                        source=RecordSource(record.source),
+                        transaction_date=record.transaction_date,
+                        channel=record.channel,
+                        amount_minor=record.amount_minor,
+                        currency=record.currency,
+                        status=record.status,
+                        loaded_at=record.loaded_at,
+                    )
+                    for record in source_records
+                ],
+            )
+
+        discrepancy_type = DiscrepancyType(discrepancy.discrepancy_type)
+        (
+            assessment,
+            assessment_note,
+            facts,
+            hypotheses,
+            recommendation,
+        ) = analyze_current_evidence(discrepancy_type, evidence_by_source)
+        return DiscrepancyExplanation(
+            discrepancy=DiscrepancyResponse.model_validate(discrepancy),
+            run_id=run.id,
+            reconciliation_date=run.reconciliation_date,
+            channel=run.channel,
+            evidence_as_of=datetime.now(timezone.utc),
+            assessment=assessment,
+            assessment_note=assessment_note,
+            facts=facts,
+            hypotheses=hypotheses,
+            recommendation=recommendation,
+            evidence_by_source=list(evidence_by_source.values()),
+        )
 
     @app.patch(
         "/api/v1/discrepancies/{discrepancy_id}",
@@ -535,6 +719,25 @@ def create_app() -> FastAPI:
                 "wallet corresponde a la billetera; provider al proveedor de pagos; "
                 "ledger al libro contable.",
             ),
+            "ExplanationAssessment": (
+                "Evaluación de evidencia",
+                "OBSERVED indica que la condición se observa en los registros actuales; "
+                "INCONCLUSIVE indica que la evidencia actual no permite confirmarla.",
+            ),
+            "SourceRecordEvidence": (
+                "Registro fuente consultado",
+                "Fila de la fuente consultada al momento del análisis; no necesariamente "
+                "formó parte de la corrida original.",
+            ),
+            "SourceEvidenceGroup": (
+                "Evidencia actual agrupada por fuente",
+                "Conteo actual y hasta 20 filas de la referencia y fecha analizadas.",
+            ),
+            "DiscrepancyExplanation": (
+                "Explicación de incidencia",
+                "Resultado determinista de solo lectura con hechos, hipótesis no "
+                "verificadas, recomendación y evidencia actual limitada.",
+            ),
         }
         for component_name, (title, description) in localized_components.items():
             if component_name in component_schemas:
@@ -567,6 +770,17 @@ def create_app() -> FastAPI:
             "resolved_count": "Transacciones resueltas",
             "resolved_discrepancy_count": "Incidencias resueltas",
             "source_counts": "Registros por fuente",
+            "record_id": "Identificador del registro",
+            "current_record_count": "Cantidad actual de registros",
+            "truncated": "Evidencia truncada",
+            "evidence_as_of": "Evidencia consultada al momento",
+            "evidence_temporality": "Temporalidad de la evidencia",
+            "assessment": "Evaluación",
+            "assessment_note": "Alcance de la evaluación",
+            "facts": "Hechos observados",
+            "hypotheses": "Hipótesis no verificadas",
+            "recommendation": "Recomendación manual",
+            "evidence_by_source": "Evidencia por fuente",
             "total_records": "Registros disponibles",
             "reconciliation_exists": "Ya existe corrida",
             "channels": "Canales",

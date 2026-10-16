@@ -22,8 +22,10 @@ Definida en [backend/app/main.py](../../../backend/app/main.py):
 - `GET /api/v1/records/availability`
 - `POST /api/v1/reconciliations`
 - `GET /api/v1/reconciliations`
+- `GET /api/v1/reconciliations/history`
 - `GET /api/v1/reconciliations/daily-summary`
 - `GET /api/v1/reconciliations/{run_id}`
+- `GET /api/v1/discrepancies/{discrepancy_id}/explanation`
 - `PATCH /api/v1/discrepancies/{discrepancy_id}`
 
 ### 2.2 Contratos y validación
@@ -141,13 +143,24 @@ El servidor [backend/app/mcp_server.py](../../../backend/app/mcp_server.py) usa
 stdio y consume la API local existente. Expone herramientas para disponibilidad,
 ejecución explícita, reporte de corrida y resumen diario. Comprueba que haya
 datos antes de crear una corrida, y ante una corrida ya existente devuelve el
-reporte en vez de duplicarla.
+reporte en vez de duplicarla. `list_reconciliation_history` ofrece un listado
+paginado de solo lectura, filtrable por rango de fechas y canal, con los
+resúmenes de cada corrida; el agente recorre páginas hasta cubrir el total.
 
 El agente [Wallet Reconciliation Operator](../../../.github/agents/reconciliation-operator.agent.md)
 y la skill
 [wallet-reconciliation-operations](../../../.github/skills/wallet-reconciliation-operations/SKILL.md)
 definen un flujo manual con límites de operación. No cargan o editan fuentes ni
 resuelven incidencias, y no incluyen scheduler.
+
+Para explicar una incidencia, `get_discrepancy_explanation` consulta el endpoint
+aditivo de solo lectura. Un catálogo determinista cubre cada `DiscrepancyType`;
+la API limita la evidencia actual a 20 filas por fuente, informa truncamiento y
+separa hechos, hipótesis no verificadas y recomendación. No existe snapshot de
+las filas fuente al momento de la corrida: toda respuesta etiqueta su evidencia
+como actual a la consulta. El resultado puede ser observado o inconcluso; no
+establece causa raíz ni cambia estado. La UI existente permanece como flujo de
+confirmación humana.
 
 ## 9) Cobertura de pruebas
 

@@ -162,6 +162,57 @@ class DiscrepancyResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, title="Descalce")
 
 
+class ExplanationAssessment(StrEnum):
+    OBSERVED = "OBSERVED"
+    INCONCLUSIVE = "INCONCLUSIVE"
+
+
+class SourceRecordEvidence(BaseModel):
+    record_id: int = Field(description="Identificador del registro fuente.")
+    source: RecordSource = Field(description="Fuente que informó el registro.")
+    transaction_date: date = Field(description="Fecha operativa del registro.")
+    channel: str = Field(description="Canal informado por la fuente.")
+    amount_minor: int = Field(description="Monto en unidades menores.")
+    currency: str = Field(description="Moneda informada por la fuente.")
+    status: str | None = Field(description="Estado informado por el proveedor, si aplica.")
+    loaded_at: datetime = Field(description="Momento en que el registro fue cargado al sistema.")
+
+    model_config = ConfigDict(title="Evidencia de registro fuente")
+
+
+class SourceEvidenceGroup(BaseModel):
+    source: RecordSource = Field(description="Fuente de la evidencia.")
+    current_record_count: int = Field(description="Cantidad actual de filas para la referencia y fecha.")
+    truncated: bool = Field(description="Indica si se omitieron filas por alcanzar el límite de evidencia.")
+    records: list[SourceRecordEvidence] = Field(description="Filas actuales de esta fuente, hasta el límite indicado.")
+
+    model_config = ConfigDict(title="Grupo de evidencia por fuente")
+
+
+class DiscrepancyExplanation(BaseModel):
+    discrepancy: DiscrepancyResponse = Field(description="Incidencia que se está analizando.")
+    run_id: int = Field(description="Corrida original en la que se detectó la incidencia.")
+    reconciliation_date: date = Field(description="Fecha operativa de la corrida.")
+    channel: str = Field(description="Canal de la corrida original.")
+    evidence_as_of: datetime = Field(
+        description="Momento de consulta; la evidencia refleja el estado actual y no un snapshot histórico."
+    )
+    evidence_temporality: str = Field(
+        default="CURRENT_AT_QUERY",
+        description="La evidencia consultada puede incluir cargas posteriores a la corrida original.",
+    )
+    assessment: ExplanationAssessment = Field(
+        description="OBSERVED confirma la condición en filas actuales; INCONCLUSIVE indica evidencia insuficiente o no concluyente."
+    )
+    assessment_note: str = Field(description="Alcance y límites de la evaluación.")
+    facts: list[str] = Field(description="Hechos calculados directamente a partir de la incidencia y las filas actuales.")
+    hypotheses: list[str] = Field(description="Posibles explicaciones no verificadas; no son causas confirmadas.")
+    recommendation: str = Field(description="Siguiente acción manual sugerida; no modifica datos ni estados.")
+    evidence_by_source: list[SourceEvidenceGroup] = Field(description="Evidencia acotada por fuente.")
+
+    model_config = ConfigDict(title="Análisis explicable de incidencia")
+
+
 class DiscrepancyStatusUpdate(BaseModel):
     status: InvestigationStatus = Field(
         description=(
@@ -215,3 +266,24 @@ class ReconciliationReport(BaseModel):
     )
 
     model_config = ConfigDict(title="Reporte de conciliación")
+
+
+class ReconciliationHistoryItem(BaseModel):
+    run_id: int = Field(description="Identificador de la corrida.")
+    reconciliation_date: date = Field(description="Fecha operativa conciliada.")
+    channel: str = Field(description="Canal incluido en la corrida.")
+    created_at: datetime = Field(description="Fecha y hora UTC de creación de la corrida.")
+    summary: ReconciliationSummary = Field(description="Totales de la corrida.")
+
+    model_config = ConfigDict(title="Elemento del historial de conciliaciones")
+
+
+class ReconciliationHistoryPage(BaseModel):
+    total: int = Field(description="Cantidad total de corridas que cumplen los filtros.")
+    limit: int = Field(description="Máximo de elementos devueltos por página.")
+    offset: int = Field(description="Índice del primer elemento de esta página.")
+    items: list[ReconciliationHistoryItem] = Field(
+        description="Corridas ordenadas de la más reciente a la más antigua."
+    )
+
+    model_config = ConfigDict(title="Página del historial de conciliaciones")

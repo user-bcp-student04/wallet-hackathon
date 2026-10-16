@@ -62,9 +62,15 @@ uvicorn app.main:app --reload
 - `POST /api/v1/reconciliations`: crea una corrida diaria para una fecha y un canal.
 - `GET /api/v1/reconciliations?reconciliation_date=AAAA-MM-DD&channel=qr`: consulta
   reportes filtrados por fecha y, opcionalmente, canal.
+- `GET /api/v1/reconciliations/history`: lista todas las corridas existentes de la
+  más reciente a la más antigua. Acepta `start_date`, `end_date` (inclusivas),
+  `channel`, `limit` (1-100, por defecto 50) y `offset` para paginar.
 - `GET /api/v1/reconciliations/daily-summary?reconciliation_date=AAAA-MM-DD`: agrega
   los totales y canales de todas las corridas del día.
 - `GET /api/v1/reconciliations/{run_id}`: consulta el resumen y detalle de descalces.
+- `GET /api/v1/discrepancies/{id}/explanation`: devuelve evidencia fuente actual
+  (hasta 20 filas por fuente), hechos, hipótesis no verificadas y una recomendación
+  determinista. No es un snapshot de la corrida ni modifica estado o registros.
 - `PATCH /api/v1/discrepancies/{id}`: actualiza el estado de investigación y su nota.
 
 The reconciliation compares records by transaction reference and expects at most one
@@ -102,12 +108,27 @@ Las tools disponibles son:
   corrida, devuelve esa corrida existente en vez de intentar duplicarla.
 - `get_reconciliation_report`: consulta una corrida existente sin crearla.
 - `get_daily_reconciliation_summary`: consulta el resumen diario.
+- `list_reconciliation_history`: lista corridas existentes con filtros opcionales
+  por rango de fechas y canal, y paginación (`limit`, `offset`). Devuelve fecha,
+  canal, ID y resumen, sin detalle de incidencias.
+- `get_discrepancy_explanation`: analiza de forma determinista una incidencia por ID
+  y devuelve hechos, hipótesis, recomendación y evidencia actual, en modo solo lectura.
 
 El MCP no carga datos, no cambia estados de investigación y no escribe en las
 fuentes financieras. La API debe estar corriendo localmente; si está inaccesible,
 la tool reporta el error explícitamente. No hay scheduler configurado: las
 conciliaciones se ejecutan solo cuando el usuario lo solicita. Los datos demo
 no son datos reales ni se deben usar para operaciones financieras.
+
+El análisis de incidencias no determina causa raíz ni resuelve el caso. La evidencia
+se obtiene en el momento de la consulta, puede incluir registros cargados después de
+la corrida y se limita a 20 filas por fuente; una muestra truncada o insuficiente se
+marca como inconclusa. Las hipótesis se presentan como no verificadas y toda acción
+de resolución requiere validación humana en la UI/API. Si se invoca desde Copilot
+Chat, la evidencia devuelta puede formar parte del contexto del modelo: usa esta
+tool solo en un entorno autorizado para procesar esos datos. La API del MVP aún
+no implementa autenticación/autorización; no expongas este endpoint a redes o
+entornos productivos sin incorporar esos controles.
 
 ## Tests
 

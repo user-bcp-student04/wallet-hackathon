@@ -198,6 +198,23 @@ def get_reconciliation_report(
 
 
 @mcp.tool()
+def get_discrepancy_explanation(
+    discrepancy_id: Annotated[
+        int,
+        Field(gt=0, description="Identifier of the discrepancy to analyze."),
+    ],
+) -> dict[str, object]:
+    """Return a deterministic, read-only explanation based on current source evidence."""
+    return _as_object(
+        _api_request(
+            "GET",
+            f"/api/v1/discrepancies/{discrepancy_id}/explanation",
+        ),
+        "discrepancy explanation",
+    )
+
+
+@mcp.tool()
 def get_daily_reconciliation_summary(
     reconciliation_date: Annotated[
         str,
@@ -213,6 +230,66 @@ def get_daily_reconciliation_summary(
             f"/api/v1/reconciliations/daily-summary?{params}",
         ),
         "daily summary",
+    )
+
+
+@mcp.tool()
+def list_reconciliation_history(
+    start_date: Annotated[
+        str | None,
+        Field(
+            description="Optional inclusive start date in YYYY-MM-DD format.",
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description="Optional inclusive end date in YYYY-MM-DD format.",
+        ),
+    ] = None,
+    channel: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            max_length=64,
+            description="Optional exact channel filter.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=100, description="Page size, from 1 to 100."),
+    ] = 50,
+    offset: Annotated[
+        int,
+        Field(ge=0, description="Number of matching history items to skip."),
+    ] = 0,
+) -> dict[str, object]:
+    """List existing reconciliations in reverse chronological order without changing data."""
+    parsed_start = _validate_date(start_date).isoformat() if start_date else None
+    parsed_end = _validate_date(end_date).isoformat() if end_date else None
+    if parsed_start is not None and parsed_end is not None and parsed_start > parsed_end:
+        raise ValueError("start_date must not be later than end_date.")
+    normalized_channel = channel.strip() if channel is not None else None
+    if channel is not None and not normalized_channel:
+        raise ValueError("Channel must not be blank.")
+
+    params = {
+        key: value
+        for key, value in {
+            "start_date": parsed_start,
+            "end_date": parsed_end,
+            "channel": normalized_channel,
+            "limit": str(limit),
+            "offset": str(offset),
+        }.items()
+        if value is not None
+    }
+    return _as_object(
+        _api_request(
+            "GET",
+            f"/api/v1/reconciliations/history?{urlencode(params)}",
+        ),
+        "reconciliation history",
     )
 
 

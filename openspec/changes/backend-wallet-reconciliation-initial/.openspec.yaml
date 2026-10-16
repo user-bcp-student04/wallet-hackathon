@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-16
+goal: Especificar el servicio de conciliación, reglas, API, investigación y
+  operación MCP antes de construirlo

@@ -6,7 +6,7 @@ Sistema de conciliación operativa para un MVP de wallet en Perú, diseñado par
 
 El sistema permite detectar descalces financieros, identificar operaciones pendientes de investigación y generar resúmenes diarios para facilitar el seguimiento operativo y mantener la integridad financiera.
 
-La solución utiliza servicios mock existentes para simular las fuentes de información y contempla el uso de agentes de IA y herramientas MCP (Model Context Protocol) para apoyar la consulta, el análisis y la explicación de las incidencias detectadas.
+El MVP trabaja con registros normalizados y datos sintéticos locales para simular las fuentes; no consulta automáticamente servicios mock externos ni proveedores financieros reales. Incluye un agente operativo manual y herramientas MCP (Model Context Protocol) para consultar disponibilidad, resultados e historial y para solicitar conciliaciones explícitas. La explicación de incidencias es determinista y de solo lectura; no sustituye la investigación humana.
 
 ## Preparar el backend local en Windows
 
@@ -159,7 +159,7 @@ La arquitectura lógica contempla los siguientes componentes:
 Este diagrama representa la arquitectura propuesta; debe ajustarse a los servicios, tecnologías y contratos existentes en el repositorio.
 
 Principios de diseño
-Reutilizar los servicios mock existentes.
+Usar registros normalizados y datos sintéticos para el MVP; integrar fuentes reales solo mediante un alcance aprobado.
 Mantener separadas las reglas financieras y las capacidades generativas de IA.
 Definir contratos claros entre frontend, backend, agentes y herramientas.
 Garantizar trazabilidad de las ejecuciones y las incidencias.
@@ -182,6 +182,12 @@ expone herramientas acotadas:
 - `get_reconciliation_report`: consulta una corrida sin crearla.
 - `get_daily_reconciliation_summary`: consulta el resumen diario, con conteos
   de transacciones e incidencias resueltas separados.
+- `list_reconciliation_history`: lista las corridas existentes, con filtros
+  opcionales y paginación; es de solo lectura.
+- `get_discrepancy_explanation`: presenta hechos, hipótesis no verificadas y una
+  recomendación determinista por incidencia a partir de evidencia actual acotada;
+  no cambia el estado ni modifica las fuentes. La respuesta puede formar parte
+  del contexto del modelo Copilot: úsala solo en un entorno autorizado.
 
 El MCP no carga datos fuente ni cambia estados de investigación y no tiene
 acceso de escritura a wallet, proveedor o ledger. Los datos sembrados son
@@ -196,7 +202,7 @@ Objetivo: disponer de una primera conciliación funcional de extremo a extremo.
 Actividades:
 
 Configurar el entorno de desarrollo y el repositorio.
-Revisar los servicios mock existentes y sus contratos.
+Revisar los contratos disponibles y preparar datos sintéticos normalizados para el MVP; no asumir integraciones externas.
 Definir la especificación funcional y técnica mediante SDD (Spec-Driven Development).
 Definir modelo de datos, arquitectura y tareas de implementación.
 Diseñar las skills y los prompts iniciales.
@@ -220,9 +226,136 @@ Actividades:
 [x] Implementar filtros, resumen diario y seguimiento de incidencias.
 [x] Validar límites de operación, errores explícitos y no duplicación de corridas.
 [x] Ejecutar pruebas backend y build/type-check del frontend.
-[ ] Incorporar explicaciones generadas por IA y ensayar la demo final.
+[x] Incorporar explicaciones deterministas de incidencias basadas en evidencia actual acotada.
+[ ] Ensayar la demo final.
 
 Criterio de salida alcanzado para esta iteración: una persona puede consultar
 disponibilidad y solicitar manualmente una conciliación de punta a punta usando
 el agente MCP; la API conserva la autoridad sobre resultados y validaciones.
-Las explicaciones generadas por IA y cualquier scheduler siguen fuera de alcance.
+Las explicaciones generadas libremente por IA y cualquier scheduler siguen fuera
+de alcance. La explicación determinista informa hechos, hipótesis no verificadas,
+limitaciones y recomendaciones sin cambiar incidencias ni registros.
+
+## Estado actual del MVP
+
+La propuesta y los criterios de producto iniciales están en
+[la historia de usuario](./docs/hu-operations-transaction-reconciliation.sp.md)
+y [la épica](./docs/epic-peru-wallet-mvp.sp.md). El detalle técnico vigente y su
+trazabilidad se mantiene en el
+[SDD de conciliación](./docs/sdd/conciliacion-operativa/README.md); los
+[hallazgos de Discovery](./docs/HALLAZGOS.md) registran cobertura y decisiones
+confirmadas.
+
+| Componente | Responsabilidad | Tecnologías |
+|---|---|---|
+| Backend | Validación de registros, conciliación determinista, persistencia, reportes e investigación | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
+| Frontend | Filtros diarios, métricas, reportes, carga JSON y acciones manuales | React 19, TypeScript, Vite |
+| Agente/MCP | Consultas operativas y solicitud explícita de conciliaciones usando la API | Agente de VS Code Copilot y servidor MCP local |
+| Especificación | Historia, criterios, requisitos, diseño y tareas del producto | SDD y OpenSpec |
+
+### Comportamiento funcional disponible
+
+- Carga de lotes normalizados `wallet`, `provider` y `ledger`, con validación
+  por fuente y máximo de 1,000 registros por lote.
+- Conciliación determinista por fecha/canal, con una sola corrida por
+  combinación y detección de faltantes, duplicados, diferencias de canal,
+  monto y moneda, y resultado de proveedor no exitoso.
+- Incidencias con estados `OPEN`, `IN_PROGRESS` y `RESOLVED`; resolver exige
+  nota y una incidencia resuelta no se puede reabrir.
+- Reportes por día/canal, resumen agregado, disponibilidad e historial
+  paginado. `resolved_count` cuenta transacciones resueltas;
+  `resolved_discrepancy_count` cuenta incidencias resueltas.
+- Explicación determinista de los diez tipos de incidencia: distingue
+  observaciones, hipótesis no verificadas y recomendación; limita evidencia
+  actual a 20 filas por fuente y puede responder `INCONCLUSIVE`. No modifica
+  fuentes, notas, estados ni métricas.
+- Seed de desarrollo sintético e idempotente para los cinco días calendario
+  completos anteriores en `America/Lima`. No borra registros ni crea corridas.
+- No hay integración real a proveedores, autenticación/autorización ni
+  scheduler. La API no debe exponerse a redes no confiables.
+
+### Agente, MCP y herramientas
+
+La configuración del workspace está en
+[.vscode/mcp.json](./.vscode/mcp.json). El servidor `wallet-reconciliation`
+se ejecuta por stdio y delega en la API local; la configuración existente
+`github-local` se conserva. El agente
+[Wallet Reconciliation Operator](./.github/agents/reconciliation-operator.agent.md)
+requiere invocación manual y respeta estos límites:
+
+- Solo ejecuta cuando la persona lo pide explícitamente y hay datos disponibles.
+- No duplica corridas existentes; las corridas son persistentes.
+- No carga registros ni cambia estados o notas.
+- Las explicaciones son de solo lectura, con evidencia actual; no concluyen
+  causa raíz si la evidencia no lo permite.
+- La evidencia devuelta puede formar parte del contexto del modelo Copilot.
+  Usa la explicación solo en un entorno autorizado para procesar esos datos.
+
+Tools MCP: `list_available_reconciliation_data`, `run_reconciliation`,
+`get_reconciliation_report`, `get_daily_reconciliation_summary`,
+`list_reconciliation_history` y `get_discrepancy_explanation`.
+La guía de operación está en
+[la skill wallet-reconciliation-operations](./.github/skills/wallet-reconciliation-operations/SKILL.md).
+
+### Agentes, skills y prompts de trabajo
+
+Los [agentes especializados del workspace](./.github/agents/) son:
+
+| Agente | Uso |
+|---|---|
+| PM-PO | Historias, épicas, requisitos y criterios de aceptación |
+| Architect | Diseño técnico y límites incrementales |
+| Developer | Implementación controlada y pruebas |
+| testing | Validación funcional local y reporte de resultados |
+| Security Analyst | Revisión de seguridad basada en evidencia, sin remediar |
+| Wallet Reconciliation Operator | Operación local mediante MCP, bajo pedido |
+| Discovery | Revisión de producto y comportamiento end-to-end |
+| OpenSpec | Gestión del flujo OpenSpec |
+
+Skills del proyecto en `.github/skills/`: `openspec-pm-po`,
+`openspec-explore`, `openspec-propose`, `openspec-apply-change`,
+`openspec-update-change`, `openspec-sync-specs`, `openspec-archive-change`,
+`openspec-testing`, `openspec-security` y
+`wallet-reconciliation-operations`.
+
+Los prompts reutilizables de [.github/prompts/](./.github/prompts/) acompañan el flujo:
+
+1. [PO: proposal y specs](./.github/prompts/po-proposal-spec.prompt.md):
+   historia/épica → proposal y specs.
+2. [Arquitecto: design](./.github/prompts/architect-design.prompt.md):
+   proposal/specs → design.
+3. [Arquitecto: tasks](./.github/prompts/architect-tasks.prompt.md):
+   design/proposal/specs → tasks.
+4. [Developer: implementar tasks](./.github/prompts/developer-implement-tasks.prompt.md):
+   implementar tareas aprobadas.
+5. [Testing: verificar implementación](./.github/prompts/testing-implementation.prompt.md):
+   probar la funcionalidad implementada.
+6. [Seguridad: revisar implementación](./.github/prompts/security-implementation-validation.prompt.md):
+   revisar implementación y validaciones de seguridad.
+7. Los prompts `opsx-*.prompt.md` apoyan explorar, proponer, aplicar,
+   actualizar, sincronizar y archivar cambios OpenSpec.
+
+### OpenSpec y trazabilidad
+
+Los cambios con sufijo `-initial` describen el trabajo como alcance propuesto,
+con tareas pendientes para representar la secuencia de construcción:
+
+- [Backend inicial](./openspec/changes/backend-wallet-reconciliation-initial/)
+- [Frontend inicial](./openspec/changes/frontend-wallet-operations-initial/)
+
+Los cambios sin ese sufijo son registros retrospectivos alineados con la
+implementación actual; sus tareas están marcadas como completadas:
+
+- [Backend retrospectivo](./openspec/changes/backend-wallet-reconciliation/)
+- [Frontend retrospectivo](./openspec/changes/frontend-wallet-operations/)
+
+Ambos conjuntos sirven propósitos diferentes. Los cambios `-initial` describen
+el alcance objetivo, pero no prueban que esos documentos se hayan escrito antes
+de la implementación. Los cambios retrospectivos registran el estado
+implementado y no sustituyen la historia real de commits.
+
+## Guía de exposición y demo
+
+Para el relato del problema, arquitectura, roles, demostración paso a paso en la
+web y operación del agente, consulta la
+[guía de exposición del proyecto](./docs/EXPOSICION_PROYECTO.md).

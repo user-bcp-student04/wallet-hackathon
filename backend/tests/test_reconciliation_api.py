@@ -238,6 +238,39 @@ def test_reports_all_discrepancy_types_with_reference_and_open_status(
         ("partial-comparison", "AMOUNT_MISMATCH", "OPEN"),
         ("partial-comparison", "PROVIDER_NOT_SUCCESSFUL", "OPEN"),
     }
+    expected_assessments = {
+        "MISSING_WALLET_RECORD": "INCONCLUSIVE",
+        "MISSING_PROVIDER_RESULT": "INCONCLUSIVE",
+        "MISSING_LEDGER_ENTRY": "INCONCLUSIVE",
+        "DUPLICATE_WALLET_RECORD": "OBSERVED",
+        "DUPLICATE_PROVIDER_RESULT": "OBSERVED",
+        "DUPLICATE_LEDGER_ENTRY": "OBSERVED",
+        "CHANNEL_MISMATCH": "OBSERVED",
+        "AMOUNT_MISMATCH": "OBSERVED",
+        "CURRENCY_MISMATCH": "OBSERVED",
+        "PROVIDER_NOT_SUCCESSFUL": "OBSERVED",
+    }
+    for discrepancy in report["discrepancies"]:
+        response = client.get(
+            f"/api/v1/discrepancies/{discrepancy['id']}/explanation"
+        )
+        assert response.status_code == 200
+        explanation = response.json()
+        assert explanation["discrepancy"]["id"] == discrepancy["id"]
+        assert explanation["assessment"] == expected_assessments[
+            discrepancy["discrepancy_type"]
+        ]
+        assert explanation["facts"]
+        assert explanation["hypotheses"]
+        assert explanation["recommendation"]
+        assert explanation["evidence_temporality"] == "CURRENT_AT_QUERY"
+        assert {
+            item["source"] for item in explanation["evidence_by_source"]
+        } == {"wallet", "provider", "ledger"}
+        assert all(
+            len(item["records"]) <= 20
+            for item in explanation["evidence_by_source"]
+        )
 
 
 def test_filters_reports_and_aggregates_daily_summary_across_channels(
@@ -343,6 +376,98 @@ def test_summary_separates_resolved_transactions_and_discrepancies(
     assert summary["resolved_discrepancy_count"] == 3
 
 
+def test_explanation_uses_current_rows_and_does_not_change_discrepancy_state(
+    client: TestClient,
+) -> None:
+    load(client, "wallet", [record("late-provider")])
+    run = reconcile(client, "qr")
+    discrepancy = client.get(
+        f"/api/v1/reconciliations/{run['id']}"
+    ).json()["discrepancies"][0]
+    assert discrepancy["discrepancy_type"] == "MISSING_PROVIDER_RESULT"
+
+    load(
+        client,
+        "provider",
+        [record("late-provider", channel="p2p", status="SUCCESS")],
+    )
+    load(
+        client,
+        "provider",
+        [record("unrelated-reference", channel="qr", status="FAILED")],
+    )
+    availability_before = client.get(
+        "/api/v1/records/availability",
+        params={"reconciliation_date": "2026-10-15"},
+    ).json()
+    response = client.get(
+        f"/api/v1/discrepancies/{discrepancy['id']}/explanation"
+    )
+
+    assert response.status_code == 200
+    explanation = response.json()
+    assert explanation["assessment"] == "INCONCLUSIVE"
+    assert explanation["evidence_temporality"] == "CURRENT_AT_QUERY"
+    assert explanation["reconciliation_date"] == "2026-10-15"
+    provider_evidence = next(
+        item
+        for item in explanation["evidence_by_source"]
+        if item["source"] == "provider"
+    )
+    assert provider_evidence["current_record_count"] == 1
+    assert provider_evidence["records"][0]["channel"] == "p2p"
+    report_after = client.get(
+        f"/api/v1/reconciliations/{run['id']}"
+    ).json()
+    assert report_after["discrepancies"][0]["status"] == "OPEN"
+    assert report_after["discrepancies"][0]["investigation_note"] is None
+    assert client.get(
+        "/api/v1/records/availability",
+        params={"reconciliation_date": "2026-10-15"},
+    ).json() == availability_before
+    assert client.get(
+        "/api/v1/discrepancies/999999/explanation"
+    ).status_code == 404
+
+
+def test_explanation_caps_evidence_and_marks_truncated_result_inconclusive(
+    client: TestClient,
+) -> None:
+    load(client, "wallet", [record("many-provider-rows")])
+    load(
+        client,
+        "provider",
+        [
+            record("many-provider-rows", status="SUCCESS")
+            for _ in range(21)
+        ],
+    )
+    run = reconcile(client, "qr")
+    discrepancy = next(
+        item
+        for item in client.get(f"/api/v1/reconciliations/{run['id']}").json()[
+            "discrepancies"
+        ]
+        if item["discrepancy_type"] == "DUPLICATE_PROVIDER_RESULT"
+    )
+
+    response = client.get(
+        f"/api/v1/discrepancies/{discrepancy['id']}/explanation"
+    )
+
+    assert response.status_code == 200
+    explanation = response.json()
+    assert explanation["assessment"] == "INCONCLUSIVE"
+    provider_evidence = next(
+        item
+        for item in explanation["evidence_by_source"]
+        if item["source"] == "provider"
+    )
+    assert provider_evidence["current_record_count"] == 21
+    assert len(provider_evidence["records"]) == 20
+    assert provider_evidence["truncated"] is True
+
+
 def test_record_availability_reports_counts_and_existing_runs(
     client: TestClient,
 ) -> None:
@@ -374,6 +499,63 @@ def test_record_availability_reports_counts_and_existing_runs(
     assert empty_day.json()["channels"] == []
 
 
+def test_reconciliation_history_filters_and_paginates_without_discrepancy_details(
+    client: TestClient,
+) -> None:
+    load(client, "wallet", [record("history-qr", channel="qr")])
+    load(client, "wallet", [record("history-p2p", channel="p2p")])
+    load(
+        client,
+        "wallet",
+        [record("history-next-day", transaction_date="2026-10-16", channel="qr")],
+    )
+    reconcile(client, "qr")
+    reconcile(client, "p2p")
+    reconcile(client, "qr", "2026-10-16")
+
+    first_page = client.get(
+        "/api/v1/reconciliations/history",
+        params={"start_date": "2026-10-15", "end_date": "2026-10-16", "limit": 2},
+    )
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 3
+    assert first_page.json()["limit"] == 2
+    assert first_page.json()["offset"] == 0
+    assert [
+        (item["reconciliation_date"], item["channel"])
+        for item in first_page.json()["items"]
+    ] == [("2026-10-16", "qr"), ("2026-10-15", "p2p")]
+    assert "discrepancies" not in first_page.json()["items"][0]
+
+    second_page = client.get(
+        "/api/v1/reconciliations/history",
+        params={"start_date": "2026-10-15", "end_date": "2026-10-16", "limit": 2, "offset": 2},
+    )
+    assert second_page.json()["total"] == 3
+    assert [(item["reconciliation_date"], item["channel"]) for item in second_page.json()["items"]] == [
+        ("2026-10-15", "qr")
+    ]
+
+    filtered = client.get(
+        "/api/v1/reconciliations/history",
+        params={"channel": "p2p"},
+    )
+    assert filtered.json()["total"] == 1
+    assert [item["channel"] for item in filtered.json()["items"]] == ["p2p"]
+
+    invalid_range = client.get(
+        "/api/v1/reconciliations/history",
+        params={"start_date": "2026-10-16", "end_date": "2026-10-15"},
+    )
+    assert invalid_range.status_code == 422
+
+    invalid_limit = client.get(
+        "/api/v1/reconciliations/history",
+        params={"limit": 101},
+    )
+    assert invalid_limit.status_code == 422
+
+
 def test_rejects_missing_provider_status_and_duplicate_daily_run(
     client: TestClient,
 ) -> None:
@@ -395,6 +577,10 @@ def test_exposes_openapi_contract_and_interactive_docs(client: TestClient) -> No
     assert schema["info"]["title"] == "API de conciliación de billetera"
     assert "/api/v1/reconciliations/daily-summary" in schema["paths"]
     assert "/api/v1/records/availability" in schema["paths"]
+    assert "/api/v1/reconciliations/history" in schema["paths"]
+    assert "/api/v1/discrepancies/{discrepancy_id}/explanation" in schema["paths"]
+    explanation_schema = schema["components"]["schemas"]["DiscrepancyExplanation"]
+    assert explanation_schema["title"] == "Explicación de incidencia"
     assert schema["paths"]["/api/v1/records/{source}"]["post"]["tags"] == [
         "Registros de origen"
     ]
